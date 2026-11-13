@@ -1,8 +1,9 @@
 {
-  "name": "cocel-studio",
+  "name": "brix-studio",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": { "node": ">=22.12.0" },
   "scripts": {
     "dev": "vite",
     "server": "node server/index.js",
