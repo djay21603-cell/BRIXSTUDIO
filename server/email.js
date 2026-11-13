@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer'
+import { readFile } from 'node:fs/promises'
 
 /** The destination is fixed server-side so the browser can never redirect project requests. */
 export const STUDIO_EMAIL = 'mendozafabillar@gmail.com'
@@ -28,6 +29,25 @@ function readConfig() {
   const configuredSender = (process.env.MAIL_FROM || '').trim()
   const smtpHost = (process.env.SMTP_HOST || '').trim()
 
+  /* HTTPS transport: stays on port 443, so it works on hosts that block SMTP ports. */
+  const brevoKey = (process.env.BREVO_API_KEY || '').trim()
+  if (brevoKey) {
+    const address = addressFrom(configuredSender) || (process.env.BREVO_SENDER || '').trim() || STUDIO_EMAIL
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+      return { configured: false, reason: 'MAIL_FROM or BREVO_SENDER is not a valid email address.' }
+    }
+    const senderName = configuredSender.match(/^"?([^"<]+?)"?\s*</)?.[1]?.trim() || STUDIO_NAME
+    return {
+      configured: true,
+      mode: 'brevo',
+      apiKey: brevoKey,
+      apiUrl: (process.env.BREVO_API_URL || 'https://api.brevo.com/v3/smtp/email').trim(),
+      sender: configuredSender || `"${STUDIO_NAME}" <${address}>`,
+      senderName,
+      address,
+    }
+  }
+
   if (smtpHost) {
     const secure = parseBool(process.env.SMTP_SECURE, positiveInt(process.env.SMTP_PORT, 0) === 465)
     const port = positiveInt(process.env.SMTP_PORT, secure ? 465 : 587)
@@ -55,7 +75,10 @@ function readConfig() {
   const refreshToken = (process.env.GMAIL_REFRESH_TOKEN || '').trim()
 
   if (!user) {
-    return { configured: false, reason: 'Set SMTP_HOST / SMTP_USER / SMTP_PASS, or GMAIL_USER with an app password.' }
+    return {
+      configured: false,
+      reason: 'Set BREVO_API_KEY, SMTP_HOST / SMTP_USER / SMTP_PASS, or GMAIL_USER with an app password.',
+    }
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user)) {
     return { configured: false, reason: 'GMAIL_USER is not a valid email address.' }
@@ -163,6 +186,49 @@ async function sendViaGmailApi(config, mail) {
   return { messageId: payload.id || payload.threadId }
 }
 
+/* ---- Brevo HTTPS API (hosts like Render block outbound SMTP ports) ---- */
+
+async function sendViaBrevo(config, mail) {
+  const attachment = []
+  for (const file of mail.attachments || []) {
+    const content = await readFile(file.path)
+    attachment.push({ name: file.filename, content: content.toString('base64') })
+  }
+
+  const payload = {
+    sender: { name: config.senderName || STUDIO_NAME, email: config.address },
+    to: [{ email: mail.to }],
+    subject: mail.subject,
+    htmlContent: mail.html,
+    textContent: mail.text,
+  }
+  if (mail.replyTo?.address) {
+    payload.replyTo = { email: mail.replyTo.address, name: mail.replyTo.name || undefined }
+  }
+  if (mail.headers?.['X-Project-Request-Id']) {
+    payload.headers = { 'X-Project-Request-Id': mail.headers['X-Project-Request-Id'] }
+  }
+  if (attachment.length) payload.attachment = attachment
+
+  const response = await fetch(config.apiUrl, {
+    method: 'POST',
+    headers: {
+      'api-key': config.apiKey,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(20_000),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const detail = body?.message || body?.code || response.statusText
+    throw new Error(`Brevo rejected the message (${response.status}: ${detail})`)
+  }
+
+  return { messageId: body.messageId || null }
+}
+
 function transportFor(config) {
   const key = `${config.mode}:${config.host}:${config.port}:${config.auth?.user}`
   if (cachedTransport && cachedTransport.key === key) return cachedTransport.transport
@@ -180,6 +246,11 @@ function transportFor(config) {
 }
 
 async function deliver(config, mail, expectedRecipient) {
+  if (config.mode === 'brevo') {
+    const info = await sendViaBrevo(config, mail)
+    return { messageId: info.messageId || null, transport: 'brevo' }
+  }
+
   if (config.mode === 'gmail_api') {
     const info = await sendViaGmailApi(config, mail)
     return { messageId: info.messageId || null, transport: 'gmail_api' }

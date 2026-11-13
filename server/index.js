@@ -353,7 +353,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
             ? 'Gmail API via OAuth 2.0'
             : status.mode === 'smtp'
               ? 'SMTP'
-              : status.mode
+              : status.mode === 'brevo'
+                ? 'Brevo HTTPS API'
+                : status.mode
         })`
       : `Email delivery: NOT configured — ${status.reason}`,
   )

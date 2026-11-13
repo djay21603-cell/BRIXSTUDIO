@@ -126,6 +126,9 @@ before(async () => {
   process.env.SMTP_PASS = 'test-app-password'
   process.env.MAIL_FROM = '"BRIX Studio" <studio@example.com>'
   delete process.env.GMAIL_USER
+  delete process.env.BREVO_API_KEY
+  delete process.env.BREVO_API_URL
+  delete process.env.BREVO_SENDER
 
   tmp = await mkdtemp(path.join(tmpdir(), 'brix-email-'))
   attachmentPath = path.join(tmp, 'logo.png')
