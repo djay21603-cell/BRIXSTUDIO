@@ -1,6 +1,7 @@
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const HEX_RE = /^#[0-9a-f]{6}$/i
 const ID_RE = /^[a-zA-Z0-9._:-]{8,120}$/
+const DRAFT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function text(value, max) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -41,10 +42,12 @@ export function validateSubmission(body) {
 
   const submittedAtRaw = text(source.submittedAt, 40)
   const submittedAt = Number.isNaN(Date.parse(submittedAtRaw)) ? new Date().toISOString() : submittedAtRaw
+  const draftIdRaw = text(source.draftId, 120)
 
   const data = {
     submissionId,
     submittedAt,
+    draftId: DRAFT_ID_RE.test(draftIdRaw) ? draftIdRaw : '',
     contact: {
       name,
       email,
@@ -82,6 +85,61 @@ export function validateSubmission(body) {
           .filter((asset) => asset.name)
           .slice(0, 20)
       : [],
+  }
+
+  return { fields, data }
+}
+
+export function validateContact(body) {
+  const source = body && typeof body === 'object' ? body : {}
+  const fields = {}
+
+  const submissionId = text(source.submissionId, 120)
+  if (!ID_RE.test(submissionId)) {
+    fields.submissionId = 'A valid submission id is required.'
+  }
+
+  const name = text(source.name, 120)
+  if (!name) fields.name = 'Your name is required.'
+
+  const email = text(source.email, 200)
+  if (!EMAIL_RE.test(email)) fields.email = 'A valid email address is required.'
+
+  const message = text(source.message, 4000)
+  if (message.length < 10) fields.message = 'Tell us a little more about the project.'
+
+  const submittedAtRaw = text(source.submittedAt, 40)
+  const submittedAt = Number.isNaN(Date.parse(submittedAtRaw)) ? new Date().toISOString() : submittedAtRaw
+  const draftIdRaw = text(source.draftId, 120)
+  const businessName = text(source.business, 160)
+
+  const data = {
+    submissionId,
+    submittedAt,
+    draftId: DRAFT_ID_RE.test(draftIdRaw) ? draftIdRaw : '',
+    source: 'contact',
+    message,
+    contact: {
+      name,
+      email,
+      phone: text(source.phone, 60),
+      location: '',
+    },
+    business: {
+      name: businessName || 'Not provided',
+      tagline: '',
+      category: '',
+      description: message,
+      existingUrl: '',
+    },
+    design: { template: 'Not selected', style: '' },
+    brand: { primary: '#386bff', accent: '#8157f5', typography: 'Not specified' },
+    pages: [],
+    features: [],
+    channels: [],
+    motion: 'Not specified',
+    assetLinks: '',
+    assets: [],
   }
 
   return { fields, data }

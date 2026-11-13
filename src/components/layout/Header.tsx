@@ -45,7 +45,7 @@ export function Header() {
         <div className="shell flex h-[72px] items-center justify-between gap-6">
           <Logo />
 
-          <nav className="hidden items-center gap-8 lg:flex" aria-label="Main navigation">
+          <nav className="hidden items-center gap-6 lg:flex xl:gap-8" aria-label="Main navigation">
             {navigation.map((item) => {
               const active =
                 item.href.startsWith('/') &&

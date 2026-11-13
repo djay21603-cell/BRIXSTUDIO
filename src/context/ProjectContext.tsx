@@ -51,6 +51,7 @@ type Action =
   | { type: 'motion'; id: MotionId }
   | { type: 'details'; patch: Partial<ProjectDetails> }
   | { type: 'add-attachments'; files: Attachment[] }
+  | { type: 'update-attachment'; id: string; patch: Partial<Attachment> }
   | { type: 'remove-attachment'; id: string }
   | { type: 'reset' }
 
@@ -118,6 +119,16 @@ function reducer(state: ProjectDraft, action: Action): ProjectDraft {
           attachments: [...state.details.attachments, ...action.files],
         },
       }
+    case 'update-attachment':
+      return {
+        ...state,
+        details: {
+          ...state.details,
+          attachments: state.details.attachments.map((file) =>
+            file.id === action.id ? { ...file, ...action.patch } : file,
+          ),
+        },
+      }
     case 'remove-attachment':
       return {
         ...state,
@@ -133,14 +144,45 @@ function reducer(state: ProjectDraft, action: Action): ProjectDraft {
   }
 }
 
+function normalizeAttachment(value: unknown): Attachment | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Partial<Attachment>
+  if (typeof raw.id !== 'string' || typeof raw.name !== 'string') return null
+  const uploaded = typeof raw.remoteId === 'string' && raw.remoteId.length > 0
+  const status =
+    raw.status === 'uploading' || raw.status === 'error' || raw.status === 'uploaded'
+      ? raw.status
+      : uploaded
+        ? 'uploaded'
+        : 'error'
+  return {
+    id: raw.id,
+    remoteId: uploaded ? (raw.remoteId as string) : undefined,
+    kind: raw.kind === 'logo' ? 'logo' : 'reference',
+    name: raw.name,
+    size: typeof raw.size === 'number' ? raw.size : 0,
+    mime: typeof raw.mime === 'string' ? raw.mime : undefined,
+    status,
+    error: status === 'error' ? (raw.error ?? 'Attach this file again to include it.') : undefined,
+  }
+}
+
 function normalizeDraft(value: unknown): ProjectDraft {
   if (!value || typeof value !== 'object') return initialDraft
   const raw = value as Partial<ProjectDraft>
+  const details = { ...initialDraft.details, ...(raw.details ?? {}) }
   return {
     ...initialDraft,
     ...raw,
     brand: { ...initialDraft.brand, ...(raw.brand ?? {}) },
-    details: { ...initialDraft.details, ...(raw.details ?? {}) },
+    details: {
+      ...details,
+      attachments: Array.isArray(details.attachments)
+        ? details.attachments
+            .map(normalizeAttachment)
+            .filter((file): file is Attachment => Boolean(file))
+        : [],
+    },
     pages: Array.isArray(raw.pages)
       ? Array.from(new Set(['home', 'contact', ...raw.pages]))
       : initialDraft.pages,
@@ -172,6 +214,7 @@ interface ProjectContextValue {
   setMotion: (id: MotionId) => void
   updateDetails: (patch: Partial<ProjectDetails>) => void
   addAttachments: (files: Attachment[]) => void
+  updateAttachment: (id: string, patch: Partial<Attachment>) => void
   removeAttachment: (id: string) => void
   reset: () => void
   saveState: 'idle' | 'saved'
@@ -204,6 +247,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const setMotion = useCallback((id: MotionId) => dispatch({ type: 'motion', id }), [])
   const updateDetails = useCallback((patch: Partial<ProjectDetails>) => dispatch({ type: 'details', patch }), [])
   const addAttachments = useCallback((files: Attachment[]) => dispatch({ type: 'add-attachments', files }), [])
+  const updateAttachment = useCallback(
+    (id: string, patch: Partial<Attachment>) => dispatch({ type: 'update-attachment', id, patch }),
+    [],
+  )
   const removeAttachment = useCallback((id: string) => dispatch({ type: 'remove-attachment', id }), [])
   const reset = useCallback(() => dispatch({ type: 'reset' }), [])
 
@@ -222,6 +269,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setMotion,
       updateDetails,
       addAttachments,
+      updateAttachment,
       removeAttachment,
       reset,
       saveState,
@@ -238,6 +286,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setMotion,
     updateDetails,
     addAttachments,
+    updateAttachment,
     removeAttachment,
     reset,
   ])

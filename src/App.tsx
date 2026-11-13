@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { ProjectProvider } from './context/ProjectContext'
 import { AuthProvider } from './features/auth/AuthContext'
@@ -7,7 +8,6 @@ import { TalkToCocel } from './components/assistant/TalkToCocel'
 import { HomePage } from './pages/HomePage'
 import { DesignsPage } from './pages/DesignsPage'
 import { BusinessTypesPage } from './pages/BusinessTypesPage'
-import { WizardPage } from './pages/WizardPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { SignInPage } from './pages/auth/SignInPage'
 import { SignUpPage } from './pages/auth/SignUpPage'
@@ -19,14 +19,29 @@ import { ToolsPage } from './pages/app/ToolsPage'
 import { ToolShellPage } from './pages/app/ToolShellPage'
 import { FilesPage } from './pages/app/FilesPage'
 import { AccountPage } from './pages/app/AccountPage'
-import { AdminPage } from './pages/app/AdminPage'
+
+const WizardPage = lazy(() =>
+  import('./pages/WizardPage').then((module) => ({ default: module.WizardPage })),
+)
+const AdminPage = lazy(() =>
+  import('./pages/app/AdminPage').then((module) => ({ default: module.AdminPage })),
+)
+
+function PageLoader() {
+  return (
+    <div className="grid min-h-[60vh] place-items-center bg-bone text-[12px] text-ink/40" role="status">
+      Loading…
+    </div>
+  )
+}
 
 export default function App() {
   return (
     <BrowserRouter>
       <ProjectProvider>
         <AuthProvider>
-          <Routes>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
             <Route element={<MarketingLayout />}>
               <Route index element={<HomePage />} />
               <Route path="designs" element={<DesignsPage />} />
@@ -51,6 +66,7 @@ export default function App() {
               </Route>
             </Route>
           </Routes>
+          </Suspense>
           <TalkToCocel />
         </AuthProvider>
       </ProjectProvider>

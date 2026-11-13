@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from 'react'
-import { ArrowUpRight, Check, Copy, Mail } from 'lucide-react'
+import { useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
+import { ArrowUpRight, Check, Copy, LoaderCircle, Mail } from 'lucide-react'
 import { site } from '../../data/site'
 import { Reveal } from '../ui/Reveal'
 import { Button, ButtonLink } from '../ui/Button'
 import { cx } from '../../lib/cx'
+import { newSubmissionId, submitContactMessage } from '../../lib/submit'
 
 interface FormState {
   name: string
@@ -17,13 +19,19 @@ const emptyForm: FormState = { name: '', business: '', email: '', message: '' }
 export function ContactSection() {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
+  const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [serverError, setServerError] = useState<string | null>(null)
+  const [confirmation, setConfirmation] = useState<'sent' | 'failed' | 'skipped'>('sent')
   const [mailOpened, setMailOpened] = useState(false)
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
+  const submissionRef = useRef<string | null>(null)
 
   const update = (key: keyof FormState, value: string) => {
     setForm((previous) => ({ ...previous, [key]: value }))
     setErrors((previous) => ({ ...previous, [key]: undefined }))
+    setServerError(null)
     setMailOpened(false)
+    setStatus((previous) => (previous === 'sent' ? 'idle' : previous))
   }
 
   const copyEmail = async () => {
@@ -36,18 +44,7 @@ export function ContactSection() {
     }
   }
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const nextErrors: Partial<Record<keyof FormState, string>> = {}
-    if (!form.name.trim()) nextErrors.name = 'Please add your name.'
-    if (!form.email.trim()) nextErrors.email = 'Please add an email address.'
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
-      nextErrors.email = 'Please check the email address.'
-    if (!form.message.trim()) nextErrors.message = 'Tell us a little about the project.'
-
-    setErrors(nextErrors)
-    if (Object.keys(nextErrors).length) return
-
+  const openMailApp = () => {
     const subject = `Project inquiry — ${form.business.trim() || form.name.trim()}`
     const body = [
       `Name: ${form.name.trim()}`,
@@ -58,6 +55,46 @@ export function ContactSection() {
     ].join('\n')
     window.location.href = `mailto:${site.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
     setMailOpened(true)
+  }
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (status === 'sending') return
+
+    const nextErrors: Partial<Record<keyof FormState, string>> = {}
+    if (!form.name.trim()) nextErrors.name = 'Please add your name.'
+    if (!form.email.trim()) nextErrors.email = 'Please add an email address.'
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
+      nextErrors.email = 'Please check the email address.'
+    if (form.message.trim().length < 10) nextErrors.message = 'Tell us a little more about the project.'
+
+    setErrors(nextErrors)
+    if (Object.keys(nextErrors).length) return
+
+    submissionRef.current ??= newSubmissionId()
+    setStatus('sending')
+    setServerError(null)
+    setMailOpened(false)
+
+    const result = await submitContactMessage({
+      submissionId: submissionRef.current,
+      submittedAt: new Date().toISOString(),
+      name: form.name.trim(),
+      business: form.business.trim(),
+      email: form.email.trim(),
+      message: form.message.trim(),
+    })
+
+    if (!result.ok) {
+      setStatus('error')
+      setServerError(result.message)
+      return
+    }
+
+    setStatus('sent')
+    setConfirmation(result.confirmation === 'failed' || result.confirmation === 'skipped' ? result.confirmation : 'sent')
+    setForm(emptyForm)
+    submissionRef.current = null
   }
 
   const inputClass = (hasError?: string) =>
@@ -81,8 +118,9 @@ export function ContactSection() {
               Tell us what you’re building.
             </h2>
             <p className="mt-6 max-w-md text-[14px] leading-relaxed text-ink/60">
-              A short note is enough. Tell us the business, what needs to change and any timing you
-              have in mind. We will reply with questions and a clear next step.
+              Send a short note straight to the studio. Tell us the business, what needs to change and
+              any timing you have in mind. You will get an automatic confirmation, then a reply with
+              questions or a written quotation.
             </p>
 
             <div className="mt-9 space-y-4">
@@ -116,10 +154,23 @@ export function ContactSection() {
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-ink/35">
                 Prefer a guided brief?
               </p>
-              <ButtonLink to="/start" variant="secondary" size="sm" className="mt-3">
-                Build your project brief
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </ButtonLink>
+              <div className="mt-3 flex flex-wrap items-center gap-4">
+                <ButtonLink to="/start" variant="secondary" size="sm">
+                  Build your project brief
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                </ButtonLink>
+                <Link
+                  to="/#faq"
+                  className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-ink/55 underline decoration-ink/20 underline-offset-4 transition-colors hover:text-ink"
+                >
+                  How quotations work
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+              <p className="mt-3 max-w-sm text-[10.5px] leading-relaxed text-ink/40">
+                Every inquiry is answered with a written quotation before any work begins. No payment
+                is taken on this website.
+              </p>
             </div>
           </Reveal>
 
@@ -142,6 +193,7 @@ export function ContactSection() {
                     placeholder="Alex Reyes"
                     autoComplete="name"
                     aria-invalid={Boolean(errors.name)}
+                    disabled={status === 'sending'}
                   />
                   {errors.name ? <p className="mt-1 text-[11px] text-danger">{errors.name}</p> : null}
                 </div>
@@ -156,6 +208,7 @@ export function ContactSection() {
                     className={inputClass()}
                     placeholder="Aurelia Bay Resort"
                     autoComplete="organization"
+                    disabled={status === 'sending'}
                   />
                 </div>
               </div>
@@ -173,6 +226,7 @@ export function ContactSection() {
                   placeholder="you@business.com"
                   autoComplete="email"
                   aria-invalid={Boolean(errors.email)}
+                  disabled={status === 'sending'}
                 />
                 {errors.email ? <p className="mt-1 text-[11px] text-danger">{errors.email}</p> : null}
               </div>
@@ -189,18 +243,51 @@ export function ContactSection() {
                   className={cx(inputClass(errors.message), 'resize-none')}
                   placeholder="A new site for our 12-room boutique hotel. We need rooms, dining, experiences and direct booking."
                   aria-invalid={Boolean(errors.message)}
+                  disabled={status === 'sending'}
                 />
                 {errors.message ? <p className="mt-1 text-[11px] text-danger">{errors.message}</p> : null}
               </div>
 
-              <Button type="submit" size="lg" className="mt-5 w-full">
-                Prepare email inquiry
-                <ArrowUpRight className="h-4 w-4" />
+              <Button type="submit" size="lg" className="mt-5 w-full" disabled={status === 'sending'}>
+                {status === 'sending' ? (
+                  <>
+                    Sending to the studio
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  </>
+                ) : (
+                  <>
+                    Send inquiry
+                    <ArrowUpRight className="h-4 w-4" />
+                  </>
+                )}
               </Button>
               <p className="mt-3 text-center text-[10.5px] leading-relaxed text-ink/40">
-                This opens your email app with the message ready. Nothing is sent until you send it
-                there.
+                Sends directly to the studio and saves your inquiry for follow-up. No email app
+                needed.
               </p>
+
+              {status === 'sent' ? (
+                <div role="status" className="mt-3 rounded-lg bg-moss/10 px-3 py-2 text-center text-[11.5px] leading-relaxed text-moss">
+                  Your inquiry was sent to the studio.
+                  {confirmation === 'sent'
+                    ? ' A confirmation copy is on its way to your inbox.'
+                    : ' The studio received it, but the confirmation copy could not be sent.'}
+                </div>
+              ) : null}
+
+              {status === 'error' ? (
+                <div role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[11.5px] leading-relaxed text-danger">
+                  {serverError || 'The inquiry could not be sent right now.'}
+                  <button
+                    type="button"
+                    onClick={openMailApp}
+                    className="mt-1 block font-semibold underline decoration-danger/40 underline-offset-2"
+                  >
+                    Open your email app instead
+                  </button>
+                </div>
+              ) : null}
+
               {mailOpened ? (
                 <p role="status" className="mt-3 rounded-lg bg-moss/10 px-3 py-2 text-center text-[11px] text-moss">
                   Your email app should be open. Send the message from there and we will take it from

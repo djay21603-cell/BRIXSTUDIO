@@ -36,11 +36,14 @@ import {
 } from '../../data/options'
 import { briefFileName, downloadBrief, fontPairingName } from '../../lib/brief'
 import { downloadBriefPdf } from '../../lib/pdfBrief'
+import type { ConfirmationState } from '../../lib/submit'
 import { site } from '../../data/site'
-import type { Attachment, CategoryId, WebsiteTemplate } from '../../types'
+import type { CategoryId, WebsiteTemplate } from '../../types'
 import { OptionCard } from '../ui/OptionCard'
 import { TemplateThumb, TemplateDemoModal } from '../templates/TemplateCard'
 import { StepHeading, Field, inputClass } from './StepHeading'
+import { getAttachmentPreview, useAssetUpload } from './useAssetUpload'
+import { logoAccept, referenceAccept, uploadLimits } from '../../lib/uploads'
 import { ChannelIcon } from '../ui/ChannelIcon'
 import { cx } from '../../lib/cx'
 
@@ -336,6 +339,10 @@ export function StepBranding() {
   const { draft, updateBrand } = useProject()
   const category = getCategory(draft.categoryId)
   const accentInk = readableOn(draft.brand.primary)
+  const logoRef = useRef<HTMLInputElement>(null)
+  const { uploading, error, uploadFiles, removeFile } = useAssetUpload()
+  const logo = draft.details.attachments.find((file) => file.kind === 'logo')
+  const logoPreview = logo ? getAttachmentPreview(logo.id) : undefined
 
   return (
     <>
@@ -365,6 +372,83 @@ export function StepBranding() {
             className={inputClass}
           />
         </Field>
+      </div>
+
+      <div className="mt-8">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/50">Brand logo</p>
+          <span className="text-[10.5px] text-ink/35">Optional · PNG, JPG, WebP · up to 10 MB</span>
+        </div>
+
+        {logo ? (
+          <div className="mt-2.5 flex items-center gap-4 rounded-2xl border border-ink/10 bg-card p-4">
+            <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-xl border border-ink/10 bg-ink/[0.04]">
+              {logoPreview ? (
+                <img src={logoPreview} alt="Uploaded logo preview" className="h-full w-full object-contain p-1.5" />
+              ) : (
+                <Paperclip className="h-5 w-5 text-ink/30" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[12.5px] font-medium text-ink">{logo.name}</p>
+              <p
+                className={cx(
+                  'mt-0.5 text-[10.5px]',
+                  logo.status === 'error' ? 'text-danger' : 'text-ink/40',
+                )}
+              >
+                {logo.status === 'uploading'
+                  ? 'Uploading…'
+                  : logo.status === 'error'
+                    ? logo.error
+                    : `${formatBytes(logo.size)} · stored securely with your brief`}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => removeFile(logo.id)}
+              aria-label={`Remove ${logo.name}`}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-ink/35 transition-colors hover:bg-ink/5 hover:text-ink"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => logoRef.current?.click()}
+            disabled={uploading}
+            className="mt-2.5 flex w-full items-center gap-4 rounded-2xl border border-dashed border-ink/20 bg-ink/[0.03] p-4 text-left transition-colors hover:border-clay/50 disabled:opacity-60"
+          >
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border border-ink/10 bg-card">
+              {uploading ? (
+                <Loader2 className="h-5 w-5 animate-spin text-ink/40" />
+              ) : (
+                <Upload className="h-5 w-5 text-ink/35" />
+              )}
+            </span>
+            <span>
+              <span className="block text-[12px] font-semibold text-ink/70">
+                {uploading ? 'Uploading your logo…' : 'Upload your logo'}
+              </span>
+              <span className="mt-0.5 block text-[10.5px] text-ink/40">
+                Transparent PNG works best. We use it as the starting point for the header mark.
+              </span>
+            </span>
+          </button>
+        )}
+
+        <input
+          ref={logoRef}
+          type="file"
+          accept={logoAccept}
+          className="sr-only"
+          onChange={(event) => {
+            void uploadFiles(event.target.files ?? [], 'logo')
+            event.currentTarget.value = ''
+          }}
+        />
+        {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
       </div>
 
       <div className="mt-8">
@@ -668,11 +752,13 @@ export function StepMotion() {
 }
 
 export function StepDetails({ showErrors }: { showErrors: boolean }) {
-  const { draft, updateDetails, addAttachments, removeAttachment } = useProject()
+  const { draft, updateDetails } = useProject()
   const fileRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
+  const { uploading, error: uploadError, uploadFiles, removeFile } = useAssetUpload()
 
   const details = draft.details
+  const references = details.attachments.filter((file) => file.kind === 'reference')
   const nameError = showErrors && !details.contactName.trim() ? 'Add your name so we know who to reply to.' : undefined
   const emailError =
     showErrors && !details.email.trim()
@@ -683,10 +769,7 @@ export function StepDetails({ showErrors }: { showErrors: boolean }) {
 
   const collect = (files: FileList | null) => {
     if (!files?.length) return
-    const next: Attachment[] = Array.from(files)
-      .slice(0, 12)
-      .map((file) => ({ id: crypto.randomUUID(), name: file.name, size: file.size }))
-    addAttachments(next)
+    void uploadFiles(files, 'reference')
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -781,40 +864,65 @@ export function StepDetails({ showErrors }: { showErrors: boolean }) {
           )}
         >
           <Upload className="mx-auto h-5 w-5 text-ink/30" />
-          <p className="mt-2 text-[12px] font-semibold text-ink/65">Add a logo, photography or a brand PDF</p>
-          <p className="mt-1 text-[10.5px] text-ink/40">Images, PDF or ZIP · up to 12 files listed</p>
+          <p className="mt-2 text-[12px] font-semibold text-ink/65">
+            Add photography, floor plans or a brand PDF
+          </p>
+          <p className="mt-1 text-[10.5px] text-ink/40">
+            PNG, JPG, WebP or PDF · up to 10 MB each · {uploadLimits.maxFiles} files per brief
+          </p>
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
-            className="mt-3 rounded-full border border-ink/15 bg-card px-4 py-2 text-[11px] font-semibold text-ink transition-colors hover:border-ink/40"
+            disabled={uploading}
+            className="mt-3 inline-flex items-center gap-2 rounded-full border border-ink/15 bg-card px-4 py-2 text-[11px] font-semibold text-ink transition-colors hover:border-ink/40 disabled:opacity-60"
           >
-            Choose files
+            {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            {uploading ? 'Uploading…' : 'Choose files'}
           </button>
           <input
             ref={fileRef}
             type="file"
             multiple
-            accept="image/*,.pdf,.zip"
+            accept={referenceAccept}
             onChange={(event) => collect(event.target.files)}
             className="sr-only"
           />
         </div>
 
-        {details.attachments.length ? (
+        {uploadError ? <p className="mt-2 text-[11px] text-danger">{uploadError}</p> : null}
+
+        {references.length ? (
           <ul className="mt-3 space-y-2">
-            {details.attachments.map((file) => (
+            {references.map((file) => (
               <li
                 key={file.id}
                 className="flex items-center gap-3 rounded-xl border border-ink/10 bg-card px-3 py-2.5"
               >
-                <Paperclip className="h-4 w-4 shrink-0 text-ink/30" />
+                {file.status === 'uploading' ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ink/40" />
+                ) : file.status === 'error' ? (
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-danger" />
+                ) : (
+                  <Paperclip className="h-4 w-4 shrink-0 text-ink/30" />
+                )}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[12px] font-medium text-ink">{file.name}</p>
-                  <p className="text-[10px] text-ink/35">{formatBytes(file.size)} · not uploaded</p>
+                  <p
+                    className={cx(
+                      'text-[10px]',
+                      file.status === 'error' ? 'text-danger' : 'text-ink/35',
+                    )}
+                  >
+                    {file.status === 'uploading'
+                      ? `${formatBytes(file.size)} · uploading…`
+                      : file.status === 'error'
+                        ? file.error
+                        : `${formatBytes(file.size)} · uploaded securely`}
+                  </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => removeAttachment(file.id)}
+                  onClick={() => removeFile(file.id)}
                   aria-label={`Remove ${file.name}`}
                   className="grid h-7 w-7 place-items-center rounded-full text-ink/35 transition-colors hover:bg-ink/5 hover:text-ink"
                 >
@@ -826,8 +934,8 @@ export function StepDetails({ showErrors }: { showErrors: boolean }) {
         ) : null}
 
         <p className="mt-3 rounded-xl bg-ink/[0.04] px-4 py-3 text-[10.5px] leading-relaxed text-ink/55">
-          Files stay in your browser for this prototype and are not uploaded anywhere. Add links
-          below, and attach the real files when we confirm the project.
+          Files are uploaded with your brief and are only visible to the BRIX Studio team. Prefer a
+          link? Add one below instead.
         </p>
       </div>
 
@@ -892,20 +1000,24 @@ function ChipList({ items, empty }: { items: string[]; empty: string }) {
 export function StepReview({
   goToStep,
   canSend,
+  uploadsPending,
   sendStatus,
   sendError,
   sentAt,
   isSent,
+  confirmation,
   onSend,
   emailOpened,
   onEmail,
 }: {
   goToStep: (step: number) => void
   canSend: boolean
+  uploadsPending: boolean
   sendStatus: 'idle' | 'sending' | 'sent' | 'error'
   sendError: { code: string; message: string } | null
   sentAt: string | null
   isSent: boolean
+  confirmation: ConfirmationState | null
   onSend: () => void
   emailOpened: boolean
   onEmail: () => void
@@ -956,16 +1068,23 @@ export function StepReview({
       {!canSend ? (
         <div className="mb-5 flex items-start gap-3 rounded-2xl border border-clay/25 bg-clay/5 px-4 py-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-clay" />
-          <div className="text-[11.5px] leading-relaxed text-ink/65">
-            Add your name and a valid email in step 8 before sending the brief.{' '}
-            <button
-              type="button"
-              onClick={() => goToStep(8)}
-              className="font-semibold underline underline-offset-2"
-            >
-              Go to business details
-            </button>
-          </div>
+          {uploadsPending ? (
+            <div className="text-[11.5px] leading-relaxed text-ink/65">
+              Your files are still uploading. Sending unlocks as soon as they finish — you can also
+              remove any file that failed in step 8.
+            </div>
+          ) : (
+            <div className="text-[11.5px] leading-relaxed text-ink/65">
+              Add your name and a valid email in step 8 before sending the brief.{' '}
+              <button
+                type="button"
+                onClick={() => goToStep(8)}
+                className="font-semibold underline underline-offset-2"
+              >
+                Go to business details
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -1047,6 +1166,36 @@ export function StepReview({
             {[draft.details.phone, draft.details.location].filter(Boolean).join(' · ') || 'No phone or location yet'}
           </p>
         </SummaryBlock>
+
+        <SummaryBlock title="Files" onEdit={() => goToStep(8)}>
+          {draft.details.attachments.length ? (
+            <ul className="space-y-1.5">
+              {draft.details.attachments.map((file) => (
+                <li key={file.id} className="flex items-center justify-between gap-3 text-[11px]">
+                  <span className="truncate text-ink/70">{file.name}</span>
+                  <span
+                    className={cx(
+                      'shrink-0 font-semibold',
+                      file.status === 'uploaded'
+                        ? 'text-moss'
+                        : file.status === 'error'
+                          ? 'text-danger'
+                          : 'text-ink/40',
+                    )}
+                  >
+                    {file.status === 'uploaded'
+                      ? 'Uploaded'
+                      : file.status === 'error'
+                        ? 'Not uploaded'
+                        : 'Uploading'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[11.5px] text-ink/35">No files attached. That is fine — you can send them later.</p>
+          )}
+        </SummaryBlock>
       </div>
 
       <div className="mt-6 rounded-2xl border border-ink/10 bg-card p-5">
@@ -1114,10 +1263,26 @@ export function StepReview({
               Request sent{sentLabel ? ` · ${sentLabel}` : ''}
             </p>
             <p className="mt-1 text-[11px] leading-relaxed text-ink/60">
-              Your brief was delivered to the studio. We'll reply to{' '}
-              <span className="font-medium text-ink/80">{draft.details.email.trim()}</span>. A copy of
-              your answers stays saved on this device.
+              {confirmation === 'sent' ? (
+                <>
+                  Your brief was delivered to the studio and a confirmation copy is on its way to{' '}
+                  <span className="font-medium text-ink/80">{draft.details.email.trim()}</span>. A copy
+                  of your answers stays saved on this device.
+                </>
+              ) : (
+                <>
+                  Your brief was delivered to the studio. We'll reply to{' '}
+                  <span className="font-medium text-ink/80">{draft.details.email.trim()}</span>. A copy
+                  of your answers stays saved on this device.
+                </>
+              )}
             </p>
+            {confirmation === 'failed' ? (
+              <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink/45">
+                The confirmation email could not be sent, but the studio has your request. Keep the
+                date and time above for your records.
+              </p>
+            ) : null}
           </div>
         ) : null}
 
@@ -1162,8 +1327,8 @@ export function StepReview({
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-ink/8 pt-3">
           <p className="max-w-md text-[10.5px] leading-relaxed text-ink/35">
-            Selected files stay on your device. Add links in step 8, or attach files when you reply to
-            our confirmation.
+            Files you attached are uploaded securely with your brief and are only visible to the
+            studio. You can add more in step 8.
           </p>
           <button
             type="button"

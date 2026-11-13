@@ -205,7 +205,7 @@ export function MiniSite({
               src={sample.heroImage}
               alt={`${businessName} sample hero`}
               className="ms-hero-image ms-hero-image-anim"
-              loading="eager"
+              loading="lazy"
             />
             <div
               className="ms-hide-sm absolute bottom-5 left-5 max-w-[300px] p-5"
@@ -259,7 +259,7 @@ export function MiniSite({
               alt={`${businessName} sample hero`}
               className="w-full object-cover"
               style={{ height: 'clamp(240px, 34cqw, 470px)' }}
-              loading="eager"
+              loading="lazy"
             />
           </div>
         </section>
@@ -297,7 +297,7 @@ export function MiniSite({
             alt={`${businessName} sample hero`}
             className="h-full w-full object-cover"
             style={{ minHeight: 'clamp(330px, 44cqw, 640px)' }}
-            loading="eager"
+            loading="lazy"
           />
         </section>
       ) : null}
@@ -308,7 +308,7 @@ export function MiniSite({
             src={sample.heroImage}
             alt={`${businessName} sample hero`}
             className="h-[clamp(380px,46cqw,650px)] w-full object-cover"
-            loading="eager"
+            loading="lazy"
           />
           <div
             className="absolute inset-0"
@@ -363,7 +363,7 @@ export function MiniSite({
               src={sample.heroImage}
               alt={`${businessName} sample hero`}
               className="ms-hero-image"
-              loading="eager"
+              loading="lazy"
             />
           </div>
         </section>
@@ -398,7 +398,7 @@ export function MiniSite({
                 alt={`${businessName} sample hero`}
                 className="ms-hero-image relative w-full object-cover"
                 style={{ borderRadius: 22 }}
-                loading="eager"
+                loading="lazy"
               />
               <div
                 className="absolute -bottom-5 -left-4 -rotate-3 px-4 py-3"
@@ -456,7 +456,7 @@ export function MiniSite({
                 borderTopLeftRadius: 'clamp(90px, 18cqw, 260px)',
                 borderTopRightRadius: 'clamp(90px, 18cqw, 260px)',
               }}
-              loading="eager"
+              loading="lazy"
             />
           </div>
         </section>
@@ -468,7 +468,7 @@ export function MiniSite({
             src={sample.heroImage}
             alt={`${businessName} sample hero`}
             className="h-[clamp(400px,48cqw,680px)] w-full object-cover"
-            loading="eager"
+            loading="lazy"
           />
           <div
             className="absolute inset-0"

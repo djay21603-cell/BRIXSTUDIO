@@ -1,10 +1,13 @@
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { initFoundation } from '../index.js'
+import { attachInquiryUploads, saveInquiry } from '../../inquiries.js'
+import { validateSubmission } from '../../validate.js'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -20,6 +23,10 @@ let memberCookie
 let ownerId
 let memberId
 let ownerWorkspaceId
+let inquiryDraftId
+let inquiryUploadId
+let inquiryRecordId
+const PDF = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n', 'latin1')
 
 before(async () => {
   dataDir = await mkdtemp(path.join(tmpdir(), 'brix-foundation-'))
@@ -78,6 +85,41 @@ async function uploadFile(buffer, { name = 'pixel.png', type = 'image/png', cook
     body: form,
   })
   return { status: response.status, body: await response.json().catch(() => null) }
+}
+
+async function uploadInquiryFile(buffer, { draftId, kind = 'reference', name = 'reference.png', type = 'image/png' }) {
+  const form = new FormData()
+  form.append('file', new Blob([buffer], { type }), name)
+  const response = await fetch(`${base}/api/v1/inquiry-uploads?draftId=${draftId}&kind=${kind}`, {
+    method: 'POST',
+    headers: { Origin: base },
+    body: form,
+  })
+  return { status: response.status, body: await response.json().catch(() => null) }
+}
+
+function briefData(submissionId, draftId) {
+  const { fields, data } = validateSubmission({
+    submissionId,
+    draftId,
+    submittedAt: new Date().toISOString(),
+    contact: { name: 'Ada Owner', email: 'ada@example.com', phone: '0917 000 0000', location: 'Cebu' },
+    business: {
+      name: 'Meridian Hotel',
+      tagline: 'A quiet stay in the city',
+      category: 'Hotel',
+      description: 'Boutique hotel with 24 rooms.',
+      existingUrl: '',
+    },
+    design: { template: 'Meridian', style: 'Editorial' },
+    brand: { primary: '#386bff', accent: '#8157f5', typography: 'Instrument Serif' },
+    pages: ['Home', 'Rooms'],
+    features: ['Booking'],
+    channels: ['Email'],
+    motion: 'Subtle',
+  })
+  assert.deepEqual(fields, {})
+  return data
 }
 
 test('foundation integration', async (t) => {
@@ -266,6 +308,72 @@ test('foundation integration', async (t) => {
     assert.equal(gone.status, 404)
   })
 
+  await t.test('draft inquiry uploads are scoped, validated and linked', async () => {
+    inquiryDraftId = randomUUID()
+    const otherDraft = randomUUID()
+
+    const created = await uploadInquiryFile(PNG, { draftId: inquiryDraftId, kind: 'logo', name: 'logo.png' })
+    assert.equal(created.status, 201)
+    assert.equal(created.body.upload.kind, 'logo')
+    assert.equal(created.body.upload.mime, 'image/png')
+    inquiryUploadId = created.body.upload.id
+
+    const listed = await jsonCall(`/api/v1/inquiry-uploads?draftId=${inquiryDraftId}`)
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.uploads.length, 1)
+
+    const other = await jsonCall(`/api/v1/inquiry-uploads?draftId=${otherDraft}`)
+    assert.equal(other.body.uploads.length, 0)
+
+    const badDraft = await jsonCall('/api/v1/inquiry-uploads?draftId=not-a-uuid')
+    assert.equal(badDraft.status, 400)
+    assert.equal(badDraft.body.code, 'invalid_draft')
+
+    const text = await uploadInquiryFile(Buffer.from('hello'), {
+      draftId: inquiryDraftId,
+      name: 'notes.txt',
+      type: 'text/plain',
+    })
+    assert.equal(text.status, 415)
+
+    const pdfLogo = await uploadInquiryFile(PDF, {
+      draftId: inquiryDraftId,
+      kind: 'logo',
+      name: 'logo.pdf',
+      type: 'application/pdf',
+    })
+    assert.equal(pdfLogo.status, 415)
+    assert.equal(pdfLogo.body.code, 'unsupported_file_type')
+
+    const removable = await uploadInquiryFile(PNG, {
+      draftId: inquiryDraftId,
+      kind: 'reference',
+      name: 'moodboard.png',
+    })
+    assert.equal(removable.status, 201)
+    const removed = await jsonCall(`/api/v1/inquiry-uploads/${removable.body.upload.id}?draftId=${inquiryDraftId}`, {
+      method: 'DELETE',
+    })
+    assert.equal(removed.status, 200)
+    assert.equal((await jsonCall(`/api/v1/inquiry-uploads?draftId=${inquiryDraftId}`)).body.uploads.length, 1)
+
+    const data = briefData(randomUUID(), inquiryDraftId)
+    const saved = saveInquiry(foundation.db, { kind: 'brief', data })
+    inquiryRecordId = saved.id
+    const attached = attachInquiryUploads(foundation.db, saved.id, inquiryDraftId)
+    assert.equal(attached.length, 1)
+    assert.equal(
+      foundation.db.prepare('SELECT inquiry_id FROM inquiry_uploads WHERE id = ?').get(inquiryUploadId).inquiry_id,
+      saved.id,
+    )
+
+    const locked = await jsonCall(`/api/v1/inquiry-uploads/${inquiryUploadId}?draftId=${inquiryDraftId}`, {
+      method: 'DELETE',
+    })
+    assert.equal(locked.status, 409)
+    assert.equal(locked.body.code, 'upload_locked')
+  })
+
   await t.test('admin endpoints are role-gated and allow management', async () => {
     const denied = await jsonCall('/api/v1/admin/stats', { cookie: memberCookie })
     assert.equal(denied.status, 403)
@@ -306,6 +414,66 @@ test('foundation integration', async (t) => {
     const workspaces = await jsonCall('/api/v1/admin/workspaces', { cookie: ownerCookie })
     assert.equal(workspaces.status, 200)
     assert.ok(workspaces.body.workspaces.length >= 3)
+  })
+
+  await t.test('admin inquiries list, update status and serve attachments', async () => {
+    const denied = await jsonCall('/api/v1/admin/inquiries', { cookie: memberCookie })
+    assert.equal(denied.status, 403)
+
+    const list = await jsonCall('/api/v1/admin/inquiries', { cookie: ownerCookie })
+    assert.equal(list.status, 200)
+    const record = list.body.inquiries.find((inquiry) => inquiry.id === inquiryRecordId)
+    assert.ok(record)
+    assert.equal(record.email, 'ada@example.com')
+    assert.equal(record.files, 1)
+    assert.ok(list.body.counts.new >= 1)
+
+    const filtered = await jsonCall('/api/v1/admin/inquiries?status=reviewing&query=Meridian', { cookie: ownerCookie })
+    assert.equal(filtered.status, 200)
+    assert.equal(filtered.body.inquiries.length, 0)
+
+    const updated = await jsonCall(`/api/v1/admin/inquiries/${inquiryRecordId}`, {
+      method: 'PATCH',
+      body: { status: 'reviewing' },
+      cookie: ownerCookie,
+    })
+    assert.equal(updated.status, 200)
+    assert.equal(updated.body.inquiry.status, 'reviewing')
+
+    const quoted = await jsonCall(`/api/v1/admin/inquiries/${inquiryRecordId}`, {
+      method: 'PATCH',
+      body: { status: 'quotation_sent' },
+      cookie: ownerCookie,
+    })
+    assert.equal(quoted.status, 200)
+    assert.equal(quoted.body.inquiry.status, 'quotation_sent')
+
+    const invalid = await jsonCall(`/api/v1/admin/inquiries/${inquiryRecordId}`, {
+      method: 'PATCH',
+      body: { status: 'paid' },
+      cookie: ownerCookie,
+    })
+    assert.equal(invalid.status, 400)
+    assert.equal(invalid.body.code, 'invalid_status')
+
+    const detail = await jsonCall(`/api/v1/admin/inquiries/${inquiryRecordId}`, { cookie: ownerCookie })
+    assert.equal(detail.status, 200)
+    assert.equal(detail.body.inquiry.payload.contact.email, 'ada@example.com')
+    assert.equal(detail.body.inquiry.files.length, 1)
+    assert.equal(detail.body.inquiry.files[0].name, 'logo.png')
+
+    const content = await fetch(`${base}/api/v1/admin/inquiry-uploads/${inquiryUploadId}/content`, {
+      headers: { cookie: ownerCookie },
+    })
+    assert.equal(content.status, 200)
+    assert.equal(content.headers.get('content-type'), 'image/png')
+    assert.deepEqual(Buffer.from(await content.arrayBuffer()), PNG)
+
+    const anonymous = await fetch(`${base}/api/v1/admin/inquiry-uploads/${inquiryUploadId}/content`)
+    assert.equal(anonymous.status, 401)
+
+    const audit = await jsonCall('/api/v1/admin/audit', { cookie: ownerCookie })
+    assert.ok(audit.body.events.some((event) => event.action === 'admin.inquiry_status_updated'))
   })
 
   await t.test('account export returns the caller data without secrets', async () => {

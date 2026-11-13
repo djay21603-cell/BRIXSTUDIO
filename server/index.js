@@ -3,11 +3,25 @@ import express from 'express'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { EmailConfigError, getEmailStatus, sendProjectRequest } from './email.js'
+import {
+  EmailConfigError,
+  getEmailStatus,
+  sendContactNotification,
+  sendCustomerConfirmation,
+  sendProjectRequest,
+} from './email.js'
 import { askAssistant, plan, assistantMode } from './assistant.js'
+import { audit } from './foundation/db.js'
 import { initFoundation } from './foundation/index.js'
 import { noStoreApi, securityHeaders } from './foundation/security.js'
-import { validateSubmission } from './validate.js'
+import {
+  attachInquiryUploads,
+  findInquiryBySubmission,
+  inquiryAttachments,
+  saveInquiry,
+  setInquiryEmailStatus,
+} from './inquiries.js'
+import { validateContact, validateSubmission } from './validate.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -15,11 +29,11 @@ const PORT = Number(process.env.PORT) || 8787
 
 const RATE_WINDOW_MS = 15 * 60 * 1000
 const RATE_MAX = 6
-const DUPLICATE_TTL_MS = 24 * 60 * 60 * 1000
+const CONTACT_RATE_MAX = 8
 
 const rateHits = new Map()
+const contactHits = new Map()
 const assistantHits = new Map()
-const acceptedSubmissions = new Map()
 const inFlight = new Set()
 
 app.disable('x-powered-by')
@@ -38,6 +52,21 @@ app.use((req, res, next) => {
   next()
 })
 
+let foundation = null
+try {
+  foundation = initFoundation(app)
+  console.log(`Foundation: SQLite at ${foundation.dataDir}`)
+} catch (error) {
+  console.error(`[foundation] could not start: ${error?.message || error}`)
+  app.use('/api/v1', (_req, res) => {
+    res.status(503).json({
+      ok: false,
+      code: 'foundation_unavailable',
+      message: 'Accounts and storage are temporarily unavailable. The project builder still works.',
+    })
+  })
+}
+
 function withinRateLimit(ip) {
   const now = Date.now()
   const recent = (rateHits.get(ip) || []).filter((time) => now - time < RATE_WINDOW_MS)
@@ -47,6 +76,18 @@ function withinRateLimit(ip) {
   }
   recent.push(now)
   rateHits.set(ip, recent)
+  return true
+}
+
+function withinContactLimit(ip) {
+  const now = Date.now()
+  const recent = (contactHits.get(ip) || []).filter((time) => now - time < RATE_WINDOW_MS)
+  if (recent.length >= CONTACT_RATE_MAX) {
+    contactHits.set(ip, recent)
+    return false
+  }
+  recent.push(now)
+  contactHits.set(ip, recent)
   return true
 }
 
@@ -124,6 +165,102 @@ app.post('/api/assistant', async (req, res) => {
   }
 })
 
+async function deliverInquiry({ res, data, kind, notifyStudio, label }) {
+  const db = foundation?.db || null
+  const prior = db ? findInquiryBySubmission(db, data.submissionId) : null
+
+  if (prior && prior.studio_email_status === 'sent') {
+    return res.json({
+      ok: true,
+      duplicate: true,
+      submissionId: data.submissionId,
+      confirmation: prior.customer_email_status === 'sent' ? 'sent' : prior.customer_email_status,
+    })
+  }
+
+  if (inFlight.has(data.submissionId)) {
+    return res.status(409).json({
+      ok: false,
+      code: 'duplicate_in_progress',
+      message: 'This request is already being sent.',
+    })
+  }
+
+  const status = getEmailStatus()
+  let inquiry = null
+  if (db) {
+    try {
+      inquiry = saveInquiry(db, { kind, data })
+      attachInquiryUploads(db, inquiry.id, data.draftId)
+    } catch (error) {
+      console.error(`[${label}] could not save inquiry: ${error?.message || error}`)
+    }
+  }
+
+  if (!status.configured) {
+    console.warn(`[${label}] email not configured: ${status.reason}`)
+    if (db && inquiry) {
+      setInquiryEmailStatus(db, inquiry.id, { studio: 'not_configured', customer: 'not_configured' })
+    }
+    return res.status(503).json({
+      ok: false,
+      code: 'email_not_configured',
+      message: 'Email delivery is not configured on this server yet.',
+    })
+  }
+
+  inFlight.add(data.submissionId)
+  try {
+    const uploads = db && inquiry ? inquiryAttachments(db, foundation.dataDir, inquiry.id) : []
+    const studioResult = await notifyStudio(data, uploads)
+    if (db && inquiry) {
+      setInquiryEmailStatus(db, inquiry.id, { studio: 'sent', studioMessageId: studioResult.messageId })
+      audit(db, {
+        action: prior ? 'inquiry.resubmitted' : 'inquiry.created',
+        targetType: 'inquiry',
+        targetId: inquiry.id,
+        meta: { kind, submissionId: data.submissionId, files: uploads.length },
+      })
+    }
+
+    let confirmation = 'sent'
+    try {
+      const confirmationResult = await sendCustomerConfirmation(data)
+      if (db && inquiry) {
+        setInquiryEmailStatus(db, inquiry.id, {
+          customer: 'sent',
+          customerMessageId: confirmationResult.messageId,
+        })
+      }
+    } catch (error) {
+      confirmation = 'failed'
+      if (db && inquiry) setInquiryEmailStatus(db, inquiry.id, { customer: 'failed' })
+      console.error(`[${label}] confirmation email failed ${data.submissionId}: ${error?.message || error}`)
+    }
+
+    console.log(`[${label}] sent ${data.submissionId} (${studioResult.messageId}) confirmation=${confirmation}`)
+    res.json({ ok: true, submissionId: data.submissionId, confirmation, duplicate: false })
+  } catch (error) {
+    const reason = error?.message || 'unknown error'
+    console.error(`[${label}] failed ${data.submissionId}: ${reason}`)
+    if (db && inquiry) setInquiryEmailStatus(db, inquiry.id, { studio: 'failed', customer: 'failed' })
+    if (error instanceof EmailConfigError) {
+      return res.status(503).json({
+        ok: false,
+        code: 'email_not_configured',
+        message: 'Email delivery is not configured on this server yet.',
+      })
+    }
+    res.status(502).json({
+      ok: false,
+      code: 'delivery_failed',
+      message: 'The email could not be delivered right now. Please try again.',
+    })
+  } finally {
+    inFlight.delete(data.submissionId)
+  }
+}
+
 app.post('/api/project-request', async (req, res) => {
   const ip = req.ip || req.socket.remoteAddress || 'unknown'
   if (!withinRateLimit(ip)) {
@@ -144,69 +281,43 @@ app.post('/api/project-request', async (req, res) => {
     })
   }
 
-  const previous = acceptedSubmissions.get(data.submissionId)
-  if (previous && Date.now() - previous < DUPLICATE_TTL_MS) {
-    return res.json({ ok: true, duplicate: true, submissionId: data.submissionId })
-  }
-
-  if (inFlight.has(data.submissionId)) {
-    return res.status(409).json({
-      ok: false,
-      code: 'duplicate_in_progress',
-      message: 'This request is already being sent.',
-    })
-  }
-
-  const status = getEmailStatus()
-  if (!status.configured) {
-    console.warn(`[project-request] email not configured: ${status.reason}`)
-    return res.status(503).json({
-      ok: false,
-      code: 'email_not_configured',
-      message: 'Email delivery is not configured on this server yet.',
-    })
-  }
-
-  inFlight.add(data.submissionId)
-  try {
-    const result = await sendProjectRequest(data)
-    acceptedSubmissions.set(data.submissionId, Date.now())
-    console.log(`[project-request] sent ${data.submissionId} (${result.messageId})`)
-    res.json({ ok: true, submissionId: data.submissionId })
-  } catch (error) {
-    const reason = error?.message || 'unknown error'
-    console.error(`[project-request] failed ${data.submissionId}: ${reason}`)
-    if (error instanceof EmailConfigError) {
-      return res.status(503).json({
-        ok: false,
-        code: 'email_not_configured',
-        message: 'Email delivery is not configured on this server yet.',
-      })
-    }
-    res.status(502).json({
-      ok: false,
-      code: 'delivery_failed',
-      message: 'The email could not be delivered right now.',
-    })
-  } finally {
-    inFlight.delete(data.submissionId)
-  }
+  await deliverInquiry({
+    res,
+    data,
+    kind: 'brief',
+    label: 'project-request',
+    notifyStudio: (payload, uploads) => sendProjectRequest(payload, { uploads }),
+  })
 })
 
-let foundation = null
-try {
-  foundation = initFoundation(app)
-  console.log(`Foundation: SQLite at ${foundation.dataDir}`)
-} catch (error) {
-  console.error(`[foundation] could not start: ${error?.message || error}`)
-  app.use('/api/v1', (_req, res) => {
-    res.status(503).json({
+app.post('/api/contact', async (req, res) => {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown'
+  if (!withinContactLimit(ip)) {
+    return res.status(429).json({
       ok: false,
-      code: 'foundation_unavailable',
-      message: 'Accounts and storage are temporarily unavailable. The project builder still works.',
+      code: 'rate_limited',
+      message: 'Too many messages. Please wait a few minutes and try again.',
     })
+  }
+
+  const { fields, data } = validateContact(req.body)
+  if (Object.keys(fields).length) {
+    return res.status(400).json({
+      ok: false,
+      code: 'invalid_request',
+      message: 'Some required details are missing or invalid.',
+      fields,
+    })
+  }
+
+  await deliverInquiry({
+    res,
+    data,
+    kind: 'contact',
+    label: 'contact',
+    notifyStudio: (payload) => sendContactNotification(payload),
   })
-}
+})
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ ok: false, code: 'not_found', message: 'Unknown API endpoint.' })
@@ -237,7 +348,13 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`BRIX Studio server listening on http://localhost:${PORT}`)
   console.log(
     status.configured
-      ? `Email delivery: configured (${status.mode === 'gmail_api' ? 'Gmail API via OAuth 2.0' : 'Gmail SMTP app password'})`
+      ? `Email delivery: configured (${
+          status.mode === 'gmail_api'
+            ? 'Gmail API via OAuth 2.0'
+            : status.mode === 'smtp'
+              ? 'SMTP'
+              : status.mode
+        })`
       : `Email delivery: NOT configured — ${status.reason}`,
   )
   console.log(

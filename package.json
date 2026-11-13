@@ -14,7 +14,7 @@
     "start": "node server/index.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"server/foundation/__tests__/*.test.js\"",
+    "test": "node --test \"server/foundation/__tests__/*.test.js\" \"server/__tests__/*.test.js\"",
     "db:backup": "node server/scripts/backup-db.js",
     "db:set-role": "node server/scripts/set-role.js"
   },

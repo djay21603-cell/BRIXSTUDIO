@@ -14,6 +14,7 @@ export const navigation = [
   { label: 'Designs', href: '/designs' },
   { label: 'Business types', href: '/business-types' },
   { label: 'Process', href: '/#process' },
+  { label: 'FAQ', href: '/#faq' },
 ]
 
 export const footerLinks = {
@@ -22,6 +23,7 @@ export const footerLinks = {
     { label: 'Design gallery', href: '/designs' },
     { label: 'Business types', href: '/business-types' },
     { label: 'Process', href: '/#process' },
+    { label: 'FAQ & quotations', href: '/#faq' },
   ],
   start: [
     { label: 'Start your project', href: '/start' },

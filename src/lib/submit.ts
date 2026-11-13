@@ -2,11 +2,13 @@ import { getCategory } from '../data/categories'
 import { getTemplate } from '../data/templates'
 import { channelLabel, featureLabel, motionOptions, pageLabel } from '../data/options'
 import { fontPairingName } from './brief'
+import { getUploadDraftId } from './uploads'
 import type { ProjectDraft } from '../types'
 
 export interface ProjectRequestPayload {
   submissionId: string
   submittedAt: string
+  draftId: string
   contact: {
     name: string
     email: string
@@ -49,6 +51,7 @@ export function buildProjectRequest(
   return {
     submissionId,
     submittedAt,
+    draftId: getUploadDraftId(),
     contact: {
       name: draft.details.contactName.trim(),
       email: draft.details.email.trim(),
@@ -76,7 +79,9 @@ export function buildProjectRequest(
     channels: draft.channels.map(channelLabel),
     motion: motion ? `${motion.label} — ${motion.description}` : '',
     assetLinks: draft.details.assetLinks.trim(),
-    assets: draft.details.attachments.map((file) => ({ name: file.name, size: file.size })),
+    assets: draft.details.attachments
+      .filter((file) => file.status === 'uploaded' && file.remoteId)
+      .map((file) => ({ name: file.name, size: file.size })),
   }
 }
 
@@ -91,16 +96,18 @@ export function newSubmissionId() {
   return `req-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
 }
 
+export type ConfirmationState = 'sent' | 'failed' | 'not_configured' | 'skipped'
+
 export type SubmitResult =
-  | { ok: true; duplicate: boolean }
+  | { ok: true; duplicate: boolean; confirmation: ConfirmationState }
   | { ok: false; code: string; message: string; fields?: Record<string, string> }
 
-export async function submitProjectRequest(payload: ProjectRequestPayload): Promise<SubmitResult> {
+async function postSubmission(path: string, payload: unknown): Promise<SubmitResult> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30000)
 
   try {
-    const response = await fetch('/api/project-request', {
+    const response = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -109,7 +116,13 @@ export async function submitProjectRequest(payload: ProjectRequestPayload): Prom
     const body = await response.json().catch(() => null)
 
     if (response.ok && body?.ok) {
-      return { ok: true, duplicate: Boolean(body.duplicate) }
+      const confirmation =
+        body.confirmation === 'sent' || body.confirmation === 'failed'
+          ? body.confirmation
+          : body.duplicate
+            ? 'skipped'
+            : 'sent'
+      return { ok: true, duplicate: Boolean(body.duplicate), confirmation }
     }
 
     return {
@@ -137,4 +150,21 @@ export async function submitProjectRequest(payload: ProjectRequestPayload): Prom
   } finally {
     clearTimeout(timeout)
   }
+}
+
+export function submitProjectRequest(payload: ProjectRequestPayload) {
+  return postSubmission('/api/project-request', payload)
+}
+
+export interface ContactPayload {
+  submissionId: string
+  submittedAt: string
+  name: string
+  business: string
+  email: string
+  message: string
+}
+
+export function submitContactMessage(payload: ContactPayload) {
+  return postSubmission('/api/contact', payload)
 }

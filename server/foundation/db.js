@@ -61,6 +61,46 @@ CREATE TABLE IF NOT EXISTS uploads (
 CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id);
 CREATE INDEX IF NOT EXISTS idx_uploads_workspace ON uploads(workspace_id);
 
+CREATE TABLE IF NOT EXISTS inquiries (
+  id TEXT PRIMARY KEY,
+  submission_id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'brief' CHECK (kind IN ('brief', 'contact')),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT,
+  location TEXT,
+  business_name TEXT,
+  category TEXT,
+  template TEXT,
+  message TEXT,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'reviewing', 'quotation_sent', 'approved', 'completed')),
+  studio_email_status TEXT NOT NULL DEFAULT 'pending' CHECK (studio_email_status IN ('pending', 'sent', 'failed', 'not_configured')),
+  customer_email_status TEXT NOT NULL DEFAULT 'pending' CHECK (customer_email_status IN ('pending', 'sent', 'failed', 'not_configured')),
+  studio_message_id TEXT,
+  customer_message_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inquiries_status ON inquiries(status);
+CREATE INDEX IF NOT EXISTS idx_inquiries_created ON inquiries(created_at);
+CREATE INDEX IF NOT EXISTS idx_inquiries_email ON inquiries(email);
+
+CREATE TABLE IF NOT EXISTS inquiry_uploads (
+  id TEXT PRIMARY KEY,
+  draft_id TEXT NOT NULL,
+  inquiry_id TEXT REFERENCES inquiries(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'reference' CHECK (kind IN ('logo', 'reference')),
+  original_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inquiry_uploads_draft ON inquiry_uploads(draft_id);
+CREATE INDEX IF NOT EXISTS idx_inquiry_uploads_inquiry ON inquiry_uploads(inquiry_id);
+
 CREATE TABLE IF NOT EXISTS rate_limits (
   key TEXT PRIMARY KEY,
   count INTEGER NOT NULL,
@@ -90,6 +130,7 @@ export function resolveDataDir() {
 export function openDatabase(dataDir = resolveDataDir()) {
   mkdirSync(dataDir, { recursive: true })
   mkdirSync(path.join(dataDir, 'uploads'), { recursive: true })
+  mkdirSync(path.join(dataDir, 'inquiry-uploads'), { recursive: true })
   mkdirSync(path.join(dataDir, 'tmp'), { recursive: true })
 
   const db = new DatabaseSync(path.join(dataDir, 'brix.sqlite'))

@@ -37,6 +37,19 @@ import {
   uploadPath,
   uploadUsage,
 } from './uploads.js'
+import {
+  findInquiryById,
+  inquiryCounts,
+  inquiryUploadPath,
+  isDraftId,
+  listInquiries,
+  listInquiryUploads,
+  mapInquiry,
+  mapInquiryUpload,
+  removeInquiryUpload,
+  storeInquiryUpload,
+  updateInquiryStatus,
+} from '../inquiries.js'
 
 function toUser(row) {
   return {
@@ -398,6 +411,52 @@ export function createFoundationRouter({ db, dataDir }) {
     }),
   )
 
+  /* Draft-scoped builder attachments. The draft id is a random UUID created in
+     the browser; files are never listable without it and cannot be fetched
+     publicly, only attached to a brief or reviewed by an admin. */
+  router.get(
+    '/inquiry-uploads',
+    rateLimit(db, { bucket: 'inquiry-upload-list', limit: 240, windowMs: 15 * 60 * 1000 }),
+    (req, res) => {
+      const draftId = String(req.query.draftId || '')
+      if (!isDraftId(draftId)) fail(400, 'invalid_draft', 'A valid draft id is required.')
+      res.json({ ok: true, uploads: listInquiryUploads(db, draftId) })
+    },
+  )
+
+  router.post(
+    '/inquiry-uploads',
+    rateLimit(db, { bucket: 'inquiry-upload', limit: 40, windowMs: 60 * 60 * 1000 }),
+    asyncRoute(async (req, res) => {
+      if (!String(req.get('content-type') || '').startsWith('multipart/form-data')) {
+        fail(400, 'invalid_upload', 'Send the file as multipart form data.')
+      }
+      const draftId = String(req.query.draftId || '')
+      const kind = String(req.query.kind || '')
+      if (!isDraftId(draftId)) fail(400, 'invalid_draft', 'Reload the builder and try again.')
+      if (!['logo', 'reference'].includes(kind)) fail(400, 'invalid_kind', 'Choose logo or reference.')
+      const received = await receiveUpload(req, dataDir)
+      try {
+        const upload = await storeInquiryUpload(db, { dataDir, draftId, kind, received })
+        res.status(201).json({ ok: true, upload })
+      } catch (error) {
+        await removeUploadTemp(received)
+        throw error
+      }
+    }),
+  )
+
+  router.delete(
+    '/inquiry-uploads/:id',
+    rateLimit(db, { bucket: 'inquiry-upload-delete', limit: 60, windowMs: 60 * 60 * 1000 }),
+    asyncRoute(async (req, res) => {
+      const draftId = String(req.query.draftId || '')
+      if (!isDraftId(draftId)) fail(400, 'invalid_draft', 'Reload the builder and try again.')
+      await removeInquiryUpload(db, dataDir, { id: req.params.id, draftId })
+      res.json({ ok: true })
+    }),
+  )
+
   router.get('/uploads', requireAuth, (req, res) => {
     const items = db
       .prepare('SELECT * FROM uploads WHERE user_id = ? ORDER BY created_at DESC LIMIT 500')
@@ -480,6 +539,7 @@ export function createFoundationRouter({ db, dataDir }) {
     const workspaces = db.prepare('SELECT COUNT(*) AS count FROM workspaces').get()
     const uploads = db.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM uploads').get()
     const sessions = db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE expires_at > ?').get(nowIso())
+    const inq = inquiryCounts(db)
     res.json({
       ok: true,
       stats: {
@@ -490,6 +550,8 @@ export function createFoundationRouter({ db, dataDir }) {
         uploads: Number(uploads.count),
         uploadBytes: Number(uploads.bytes),
         activeSessions: Number(sessions.count),
+        inquiries: inq.all,
+        newInquiries: inq.new,
         limits: uploadLimits(),
       },
     })
@@ -572,6 +634,72 @@ export function createFoundationRouter({ db, dataDir }) {
       })),
     })
   })
+
+  router.get('/admin/inquiries', requireAuth, requireAdmin, (req, res) => {
+    const status = String(req.query.status || '').trim()
+    const query = String(req.query.query || '').trim()
+    const limit = Math.min(300, Math.max(1, Number(req.query.limit) || 100))
+    res.json({
+      ok: true,
+      inquiries: listInquiries(db, { status, query, limit }),
+      counts: inquiryCounts(db),
+    })
+  })
+
+  router.get('/admin/inquiries/:id', requireAuth, requireAdmin, (req, res) => {
+    if (!isId(req.params.id)) fail(404, 'inquiry_not_found', 'Inquiry not found.')
+    const row = findInquiryById(db, req.params.id)
+    if (!row) fail(404, 'inquiry_not_found', 'Inquiry not found.')
+    const files = db
+      .prepare('SELECT * FROM inquiry_uploads WHERE inquiry_id = ? ORDER BY created_at ASC')
+      .all(row.id)
+      .map(mapInquiryUpload)
+    res.json({ ok: true, inquiry: { ...mapInquiry(row, { includePayload: true }), files } })
+  })
+
+  router.patch(
+    '/admin/inquiries/:id',
+    requireAuth,
+    requireAdmin,
+    asyncRoute(async (req, res) => {
+      if (!isId(req.params.id)) fail(404, 'inquiry_not_found', 'Inquiry not found.')
+      const row = findInquiryById(db, req.params.id)
+      if (!row) fail(404, 'inquiry_not_found', 'Inquiry not found.')
+      const next = updateInquiryStatus(db, row.id, String(req.body?.status || ''))
+      audit(db, {
+        actorId: req.user.id,
+        action: 'admin.inquiry_status_updated',
+        targetType: 'inquiry',
+        targetId: row.id,
+        meta: { from: row.status, to: next.status },
+        ip: req.ip,
+      })
+      res.json({ ok: true, inquiry: mapInquiry(next, { includePayload: true }) })
+    }),
+  )
+
+  router.get(
+    '/admin/inquiry-uploads/:id/content',
+    requireAuth,
+    requireAdmin,
+    asyncRoute(async (req, res) => {
+      const row = db.prepare('SELECT * FROM inquiry_uploads WHERE id = ?').get(req.params.id)
+      if (!row) fail(404, 'upload_not_found', 'File not found.')
+      const filePath = inquiryUploadPath(dataDir, row.draft_id, row.stored_name)
+      if (!(await fileExists(filePath))) fail(404, 'upload_missing', 'The stored file is missing.')
+      res.set({
+        'Content-Type': row.mime,
+        'Content-Length': String(row.size),
+        'Content-Disposition': safeFilenameHeader(row.original_name),
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+      })
+      res.sendFile(path.resolve(filePath), (error) => {
+        if (error && !res.headersSent) res.status(404).end()
+      })
+    }),
+  )
 
   router.get('/admin/audit', requireAuth, requireAdmin, (req, res) => {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50))

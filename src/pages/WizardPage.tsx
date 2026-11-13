@@ -9,6 +9,7 @@ import {
   newSubmissionId,
   requestSignature,
   submitProjectRequest,
+  type ConfirmationState,
 } from '../lib/submit'
 import { Logo } from '../components/layout/Logo'
 import { Button } from '../components/ui/Button'
@@ -46,7 +47,7 @@ function emailIsValid(value: string) {
 type SendState =
   | { status: 'idle' }
   | { status: 'sending' }
-  | { status: 'sent'; at: string; signature: string }
+  | { status: 'sent'; at: string; signature: string; confirmation: ConfirmationState }
   | { status: 'error'; code: string; message: string; signature: string }
 
 export function WizardPage() {
@@ -97,6 +98,7 @@ export function WizardPage() {
   }, [step])
 
   const detailsValid = Boolean(draft.details.contactName.trim() && emailIsValid(draft.details.email))
+  const uploadsPending = draft.details.attachments.some((file) => file.status === 'uploading')
 
   const completed = useMemo(() => {
     const set = new Set<number>()
@@ -172,7 +174,7 @@ export function WizardPage() {
     const result = await submitProjectRequest(payload)
 
     if (result.ok) {
-      setSendState({ status: 'sent', at: submittedAt, signature })
+      setSendState({ status: 'sent', at: submittedAt, signature, confirmation: result.confirmation })
     } else {
       setSendState({ status: 'error', code: result.code, message: result.message, signature })
     }
@@ -233,7 +235,8 @@ export function WizardPage() {
               {step === 9 ? (
                 <StepReview
                   goToStep={goToStep}
-                  canSend={detailsValid}
+                  canSend={detailsValid && !uploadsPending}
+                  uploadsPending={uploadsPending}
                   sendStatus={effectiveSendStatus}
                   sendError={
                     sendState.status === 'error' && effectiveSendStatus === 'error'
@@ -242,6 +245,7 @@ export function WizardPage() {
                   }
                   sentAt={isSent && sendState.status === 'sent' ? sendState.at : null}
                   isSent={isSent}
+                  confirmation={isSent && sendState.status === 'sent' ? sendState.confirmation : null}
                   onSend={sendRequest}
                   emailOpened={emailOpened}
                   onEmail={openEmail}

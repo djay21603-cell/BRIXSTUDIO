@@ -65,6 +65,8 @@ export interface AdminStats {
   uploads: number
   uploadBytes: number
   activeSessions: number
+  inquiries: number
+  newInquiries: number
   limits: { maxFileBytes: number; quotaBytes: number; maxFiles: number }
 }
 
@@ -89,6 +91,67 @@ export interface AuditEvent {
   actorEmail: string | null
   createdAt: string
 }
+
+export type InquiryStatus = 'new' | 'reviewing' | 'quotation_sent' | 'approved' | 'completed'
+export type InquiryKind = 'brief' | 'contact'
+export type EmailStatus = 'pending' | 'sent' | 'failed' | 'not_configured'
+
+export interface InquiryPayload {
+  contact?: { name?: string; email?: string; phone?: string; location?: string }
+  business?: {
+    name?: string
+    tagline?: string
+    category?: string
+    description?: string
+    existingUrl?: string
+  }
+  design?: { template?: string; style?: string }
+  brand?: { primary?: string; accent?: string; typography?: string }
+  pages?: string[]
+  features?: string[]
+  channels?: string[]
+  motion?: string
+  assetLinks?: string
+  assets?: { name: string; size: number }[]
+  message?: string
+  source?: string
+}
+
+export interface InquiryFile {
+  id: string
+  kind: 'logo' | 'reference'
+  name: string
+  mime: string
+  size: number
+  createdAt: string
+}
+
+export interface InquirySummary {
+  id: string
+  submissionId: string
+  kind: InquiryKind
+  status: InquiryStatus
+  name: string
+  email: string
+  phone: string | null
+  location: string | null
+  businessName: string | null
+  category: string | null
+  template: string | null
+  message: string | null
+  emails: { studio: EmailStatus; customer: EmailStatus }
+  files: number
+  createdAt: string
+  updatedAt: string
+  payload?: InquiryPayload | null
+}
+
+export interface InquiryDetail extends Omit<InquirySummary, 'files'> {
+  payload: InquiryPayload | null
+  files: InquiryFile[]
+}
+
+export type InquiryCounts = Record<InquiryStatus, number> & { all: number }
 
 export class ApiError extends Error {
   status: number
@@ -198,4 +261,14 @@ export function formatBytes(bytes: number) {
 
 export function formatDate(value: string) {
   return new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+export function formatDateTime(value: string) {
+  return new Date(value).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }

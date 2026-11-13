@@ -107,10 +107,17 @@ export interface PageOption {
   locked?: boolean
 }
 
+export type AttachmentKind = 'logo' | 'reference'
+
 export interface Attachment {
   id: string
+  remoteId?: string
+  kind: AttachmentKind
   name: string
   size: number
+  mime?: string
+  status: 'uploading' | 'uploaded' | 'error'
+  error?: string
 }
 
 export interface BrandDraft {
