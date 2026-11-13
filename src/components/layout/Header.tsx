@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { ArrowUpRight, Menu, X } from 'lucide-react'
 import { navigation, site } from '../../data/site'
+import { useAuth } from '../../features/auth/AuthContext'
 import { Logo } from './Logo'
 import { ButtonLink } from '../ui/Button'
 import { cx } from '../../lib/cx'
@@ -10,6 +11,7 @@ export function Header() {
   const [open, setOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
   const location = useLocation()
+  const { user, loading } = useAuth()
 
   useEffect(() => {
     setOpen(false)
@@ -71,6 +73,22 @@ export function Header() {
             >
               {site.email}
             </a>
+            {!loading && user ? (
+              <Link
+                to="/app"
+                className="hidden items-center gap-1 text-[12.5px] font-medium text-ink/60 transition-colors hover:text-ink sm:inline-flex"
+              >
+                Dashboard
+                <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            ) : !loading ? (
+              <Link
+                to="/sign-in"
+                className="hidden text-[12.5px] font-medium text-ink/55 transition-colors hover:text-ink sm:block"
+              >
+                Sign in
+              </Link>
+            ) : null}
             <ButtonLink to="/start" size="sm" className="hidden sm:inline-flex">
               Start a project
               <ArrowUpRight className="h-3.5 w-3.5" />
@@ -110,6 +128,10 @@ export function Header() {
           ))}
         </nav>
         <div className="mt-6 flex flex-col gap-3">
+          <ButtonLink to={user ? '/app' : '/sign-in'} variant="secondary" size="lg">
+            {user ? 'Open dashboard' : 'Sign in'}
+            <ArrowUpRight className="h-4 w-4" />
+          </ButtonLink>
           <ButtonLink to="/start" size="lg">
             Start your project
             <ArrowUpRight className="h-4 w-4" />

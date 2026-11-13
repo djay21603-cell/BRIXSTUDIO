@@ -30,6 +30,12 @@ export const footerLinks = {
   ],
 }
 
+export const legalLinks = [
+  { label: 'Privacy', href: '/privacy' },
+  { label: 'Terms', href: '/terms' },
+  { label: 'Workspace', href: '/app' },
+]
+
 export const services = [
   {
     title: 'Website design',

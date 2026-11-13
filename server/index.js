@@ -5,6 +5,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EmailConfigError, getEmailStatus, sendProjectRequest } from './email.js'
 import { askAssistant, plan, assistantMode } from './assistant.js'
+import { initFoundation } from './foundation/index.js'
+import { noStoreApi, securityHeaders } from './foundation/security.js'
 import { validateSubmission } from './validate.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -22,6 +24,8 @@ const inFlight = new Set()
 
 app.disable('x-powered-by')
 app.set('trust proxy', 1)
+app.use(securityHeaders)
+app.use(noStoreApi)
 app.use(express.json({ limit: '96kb' }))
 
 app.use((req, res, next) => {
@@ -189,6 +193,21 @@ app.post('/api/project-request', async (req, res) => {
   }
 })
 
+let foundation = null
+try {
+  foundation = initFoundation(app)
+  console.log(`Foundation: SQLite at ${foundation.dataDir}`)
+} catch (error) {
+  console.error(`[foundation] could not start: ${error?.message || error}`)
+  app.use('/api/v1', (_req, res) => {
+    res.status(503).json({
+      ok: false,
+      code: 'foundation_unavailable',
+      message: 'Accounts and storage are temporarily unavailable. The project builder still works.',
+    })
+  })
+}
+
 app.use('/api', (_req, res) => {
   res.status(404).json({ ok: false, code: 'not_found', message: 'Unknown API endpoint.' })
 })
@@ -213,7 +232,7 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ ok: false, code: 'server_error', message: 'Unexpected server error.' })
 })
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   const status = getEmailStatus()
   console.log(`BRIX Studio server listening on http://localhost:${PORT}`)
   console.log(
@@ -227,3 +246,15 @@ app.listen(PORT, '0.0.0.0', () => {
       : 'Assistant: built-in planner (set ASSISTANT_API_KEY for AI mode)',
   )
 })
+
+function shutdown(signal) {
+  console.log(`[server] ${signal} received, shutting down`)
+  server.close(() => {
+    foundation?.close()
+    process.exit(0)
+  })
+  setTimeout(() => process.exit(0), 8000).unref()
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

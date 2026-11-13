@@ -1,6 +1,6 @@
 import { ArrowUpRight, ArrowUp } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { footerLinks, site } from '../../data/site'
+import { footerLinks, legalLinks, site } from '../../data/site'
 import { Logo } from './Logo'
 import { ButtonLink } from '../ui/Button'
 
@@ -91,9 +91,21 @@ export function Footer() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-ink/10 py-6 text-[11px] text-ink/35 sm:flex-row sm:items-center sm:justify-between">
-          <p>© {new Date().getFullYear()} {site.name}. All rights reserved.</p>
-          <p>Independent web studio · Working with businesses worldwide</p>
+        <div className="flex flex-col gap-3 border-t border-ink/10 py-6 text-[11px] text-ink/35 sm:flex-row sm:items-center sm:justify-between">
+          <p>
+            © {new Date().getFullYear()} {site.name}. All rights reserved. · Independent web studio
+          </p>
+          <div className="flex flex-wrap items-center gap-5">
+            {legalLinks.map((link) => (
+              <Link
+                key={link.href}
+                to={link.href}
+                className="transition-colors hover:text-ink"
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
         </div>
       </div>
     </footer>

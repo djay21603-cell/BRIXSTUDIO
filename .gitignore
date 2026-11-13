@@ -7,3 +7,9 @@ dist/
 .DS_Store
 .shots/
 *.tsbuildinfo
+
+# Runtime data: database, sessions, uploaded files, backups.
+var/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
